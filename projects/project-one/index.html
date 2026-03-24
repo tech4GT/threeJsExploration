@@ -2,24 +2,43 @@
 <html lang="en">
 <head>
   <!--
-    Project One — Fundamentals Playground
-    Explores: Scene setup, basic geometries, MeshStandardMaterial,
-    directional + ambient lighting, shadows, OrbitControls, Clock-based animation.
+    From Pencil to Carbon Atom
+    Explores: camera animation state machine, InstancedMesh hex lattice,
+    ShaderMaterial pulsing bonds, UnrealBloomPass post-processing,
+    hierarchical Group composition, multi-stage scene management.
   -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Project One — Three.js Fundamentals</title>
+  <title>Pencil to Carbon Atom — Three.js</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #000; overflow: hidden; }
     canvas { display: block; }
-    #info {
+
+    #ui {
       position: absolute;
-      top: 16px;
-      left: 16px;
-      color: rgba(255,255,255,0.5);
-      font: 13px/1.6 monospace;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
       pointer-events: none;
+    }
+
+    #stage-label {
+      color: rgba(255, 255, 255, 0.85);
+      font: 600 15px/1 'Courier New', monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      text-shadow: 0 0 12px rgba(100, 180, 255, 0.6);
+    }
+
+    #hint {
+      color: rgba(255, 255, 255, 0.35);
+      font: 12px/1 'Courier New', monospace;
+      letter-spacing: 0.04em;
     }
   </style>
 
@@ -33,7 +52,10 @@
   </script>
 </head>
 <body>
-  <div id="info">Project One · drag to orbit · scroll to zoom</div>
+  <div id="ui">
+    <div id="stage-label">Pencil — Macro Scale</div>
+    <div id="hint">← → or Space to travel through scales</div>
+  </div>
   <script type="module" src="main.js"></script>
 </body>
 </html>

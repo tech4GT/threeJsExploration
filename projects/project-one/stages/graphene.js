@@ -1,0 +1,183 @@
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------------
+// Hex grid generator — two-atom basis (A and B sublattice)
+// Returns array of [x, z] pairs for atom positions in the XZ plane.
+// ---------------------------------------------------------------------------
+function hexGrid(R, bondLength) {
+  const atoms = [];
+  const spacing = bondLength * Math.sqrt(3);
+  for (let row = -R; row <= R; row++) {
+    for (let col = -R; col <= R; col++) {
+      const xA = col * spacing + (row % 2 === 0 ? 0 : spacing * 0.5);
+      const zA = row * bondLength * 1.5;
+      atoms.push([xA, zA]);                                                       // sublattice A
+      atoms.push([xA + bondLength * Math.sqrt(3) * 0.5, zA + bondLength * 0.5]); // sublattice B
+    }
+  }
+  return atoms;
+}
+
+// ---------------------------------------------------------------------------
+// Bond generation helpers
+// For each unique atom pair within bondLength * 1.1, emit two vertices.
+// Returns a Float32Array of [x0,y,z0, x1,y,z1, ...] ready for BufferGeometry.
+// ---------------------------------------------------------------------------
+function buildBondPositions(atoms, yLevel, bondLength) {
+  const threshold = bondLength * 1.1;
+  const threshSq  = threshold * threshold;
+  const positions = [];
+
+  for (let i = 0; i < atoms.length; i++) {
+    const [x0, z0] = atoms[i];
+    for (let j = i + 1; j < atoms.length; j++) {
+      const [x1, z1] = atoms[j];
+      const dx = x1 - x0;
+      const dz = z1 - z0;
+      if (dx * dx + dz * dz <= threshSq) {
+        positions.push(x0, yLevel, z0, x1, yLevel, z1);
+      }
+    }
+  }
+
+  return new Float32Array(positions);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 — buildGrapheneLayers(scene)
+// Five stacked graphene layers (micro scale).
+// ---------------------------------------------------------------------------
+export function buildGrapheneLayers(scene) {
+  const R          = 4;
+  const bondLength = 0.42;
+  const numLayers  = 5;
+  const layerSpacing = 0.3;
+
+  // AB-stacking shift applied to odd layers
+  const shiftX = bondLength * 0.5;
+  const shiftZ = bondLength * Math.sqrt(3) / 6;
+
+  // Shared atom material (one instance reused across all layers)
+  const atomMaterial = new THREE.MeshStandardMaterial({
+    color:            new THREE.Color('#333344'),
+    emissive:         new THREE.Color('#224466'),
+    emissiveIntensity: 0.3,
+  });
+
+  // Shared bond material
+  const bondMaterial = new THREE.LineBasicMaterial({
+    color:       new THREE.Color('#334488'),
+    opacity:     0.7,
+    transparent: true,
+  });
+
+  const group = new THREE.Group();
+
+  // Generate base atom positions once; shift per-layer as needed
+  const baseAtoms = hexGrid(R, bondLength);
+  const atomCount = baseAtoms.length;
+
+  // Y positions: centered around 0
+  const yStart = -((numLayers - 1) * layerSpacing) / 2;
+
+  const matrix = new THREE.Matrix4();
+  const atomGeo = new THREE.SphereGeometry(0.08, 6, 4);
+
+  for (let l = 0; l < numLayers; l++) {
+    const y    = yStart + l * layerSpacing;
+    const isOdd = l % 2 !== 0;
+
+    // Apply AB-stacking offset for odd layers
+    const atoms = baseAtoms.map(([x, z]) => [
+      isOdd ? x + shiftX : x,
+      isOdd ? z + shiftZ : z,
+    ]);
+
+    // --- Atoms ---
+    const instancedMesh = new THREE.InstancedMesh(atomGeo, atomMaterial, atomCount);
+    for (let i = 0; i < atomCount; i++) {
+      const [x, z] = atoms[i];
+      matrix.setPosition(x, y, z);
+      instancedMesh.setMatrixAt(i, matrix);
+    }
+    instancedMesh.instanceMatrix.needsUpdate = true;
+    group.add(instancedMesh);
+
+    // --- Bonds ---
+    const posArray   = buildBondPositions(atoms, y, bondLength);
+    const bondGeo    = new THREE.BufferGeometry();
+    bondGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+    const lines      = new THREE.LineSegments(bondGeo, bondMaterial);
+    group.add(lines);
+  }
+
+  scene.add(group);
+  return { group };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3 — buildGrapheneSheet(scene, sharedUniforms)
+// One large graphene sheet (nano scale) with a pulsing bond shader.
+// sharedUniforms: { uTime: { value: 0 } }
+// Caller must update sharedUniforms.uTime.value = elapsed each frame.
+// ---------------------------------------------------------------------------
+export function buildGrapheneSheet(scene, sharedUniforms) {
+  const R          = 7;
+  const bondLength = 0.42;
+
+  const atoms = hexGrid(R, bondLength);
+  const atomCount = atoms.length;
+
+  // --- Atom material ---
+  const atomMaterial = new THREE.MeshStandardMaterial({
+    color:            new THREE.Color('#44aaff'),
+    emissive:         new THREE.Color('#0055aa'),
+    emissiveIntensity: 1.0,
+    metalness:        0.2,
+    roughness:        0.3,
+  });
+
+  // --- Bond ShaderMaterial (pulsing opacity) ---
+  const bondMaterial = new THREE.ShaderMaterial({
+    uniforms:     sharedUniforms,
+    transparent:  true,
+    vertexShader: /* glsl */`
+      void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform float uTime;
+      void main() {
+        float pulse = 0.5 + 0.45 * sin(uTime * 2.0);
+        gl_FragColor = vec4(0.3, 0.7, 1.0, pulse);
+      }
+    `,
+  });
+
+  const group = new THREE.Group();
+  const y     = 0;
+
+  // --- Atoms (InstancedMesh) ---
+  const atomGeo      = new THREE.SphereGeometry(0.08, 6, 4);
+  const instancedMesh = new THREE.InstancedMesh(atomGeo, atomMaterial, atomCount);
+  const matrix       = new THREE.Matrix4();
+
+  for (let i = 0; i < atomCount; i++) {
+    const [x, z] = atoms[i];
+    matrix.setPosition(x, y, z);
+    instancedMesh.setMatrixAt(i, matrix);
+  }
+  instancedMesh.instanceMatrix.needsUpdate = true;
+  group.add(instancedMesh);
+
+  // --- Bonds (LineSegments with ShaderMaterial) ---
+  const posArray = buildBondPositions(atoms, y, bondLength);
+  const bondGeo  = new THREE.BufferGeometry();
+  bondGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+  const lines    = new THREE.LineSegments(bondGeo, bondMaterial);
+  group.add(lines);
+
+  scene.add(group);
+  return { group, bondMaterial };
+}
