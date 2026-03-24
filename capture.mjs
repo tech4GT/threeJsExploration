@@ -140,20 +140,21 @@ console.log(`\nAll ${globalFrame} frames captured. Encoding at ${FPS}fps...`);
 try { execSync('pkill -f "http.server 8765"'); } catch {}
 
 // Encode
-execSync(
-  `python3 -c "
-import imageio.v2 as imageio, glob, os
-paths = sorted(glob.glob('${FRAMES_DIR}/frame_*.png'))
-print(f'Encoding {len(paths)} frames...')
-w = imageio.get_writer('${OUTPUT}', fps=${FPS}, codec='libx264', quality=8)
+import { writeFileSync } from 'fs';
+const encScript = `/tmp/threejs-encode.py`;
+writeFileSync(encScript, `
+import imageio.v2 as imageio, glob, os, sys
+frames_dir, output, fps = sys.argv[1], sys.argv[2], int(sys.argv[3])
+paths = sorted(glob.glob(frames_dir + '/frame_*.png'))
+print(f'Encoding {len(paths)} frames at {fps}fps...')
+w = imageio.get_writer(output, fps=fps, codec='libx264', quality=8)
 for i, p in enumerate(paths):
     w.append_data(imageio.imread(p))
     if i % 300 == 0: print(f'  {i}/{len(paths)}')
 w.close()
-print(f'Done: {os.path.getsize(\"${OUTPUT}\")//1024}KB')
-"`,
-  { stdio: 'inherit' }
-);
+print(f'Done: {os.path.getsize(output) // 1024}KB')
+`);
+execSync(`python3 ${encScript} "${FRAMES_DIR}" "${OUTPUT}" "${FPS}"`, { stdio: 'inherit' });
 
 rmSync(FRAMES_DIR, { recursive: true });
 console.log(`\nVideo saved: ${OUTPUT}`);
