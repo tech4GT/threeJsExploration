@@ -1,134 +1,159 @@
 /**
- * Deterministic frame capture for Three.js animations.
+ * Deterministic 60fps capture for Three.js animations.
  *
- * Key insight: page.screenshot() has variable latency (10–50ms), so a real-time
- * capture produces jitter because Three.js Clock advances with wall-clock time.
+ * Each stage is captured in its own browser session to avoid memory
+ * accumulation that crashes the browser mid-run (~frame 744).
  *
- * Fix: override performance.now() and requestAnimationFrame BEFORE page load so
- * time only advances by exactly 1/FPS seconds per captured frame. The animation
- * runs in lockstep with the capture loop — perfectly smooth output.
+ * Time is controlled deterministically: performance.now() and RAF are
+ * overridden before page load so clock advances exactly 1/FPS seconds
+ * per captured frame — eliminating the jitter of real-time polling.
  */
 
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { chromium } = require('/opt/node22/lib/node_modules/playwright');
-import { mkdirSync, rmSync } from 'fs';
+import { mkdirSync, rmSync, readdirSync } from 'fs';
 import { execSync } from 'child_process';
 import path from 'path';
 
 const FRAMES_DIR = '/tmp/pencil-atom-frames';
 const OUTPUT     = '/home/user/threeJsExploration/pencil-to-atom.mp4';
+const URL        = 'http://localhost:8765/';
 const FPS        = 60;
-const FRAME_DT   = 1000 / FPS;  // ms advanced per captured frame
+const FRAME_DT   = 1000 / FPS;
 
-// How many frames to record per stage
+// Frames per stage (seconds × FPS)
 const STAGE_FRAMES = [
-  5  * FPS,   // Stage 0 — pencil
+  5  * FPS,   // Stage 0 — pencil macro
   5  * FPS,   // Stage 1 — graphite tip zoom
   5  * FPS,   // Stage 2 — graphene layers
   5  * FPS,   // Stage 3 — graphene sheet
   6  * FPS,   // Stage 4 — carbon atom
 ];
 
+const TOTAL_FRAMES = STAGE_FRAMES.reduce((a, b) => a + b, 0);
+
 try { rmSync(FRAMES_DIR, { recursive: true }); } catch {}
 mkdirSync(FRAMES_DIR, { recursive: true });
 
-const browser = await chromium.launch({
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--use-gl=swiftshader',
-    '--enable-webgl',
-    '--ignore-gpu-blocklist',
-  ],
-  headless: true,
-});
+// ── Deterministic clock injection (runs before Three.js loads) ───────────────
+const INIT_SCRIPT = (startFakeMs) => `
+  (() => {
+    let _fakeMs = ${startFakeMs};
+    const _perfBase = performance.now.bind(performance)();
+    performance.now = () => _fakeMs + _perfBase;
+    const _dateBase = Date.now();
+    Date.now = () => Math.floor(_fakeMs) + _dateBase;
+    let _rafQueue = [];
+    window.requestAnimationFrame = cb => { _rafQueue.push(cb); return _rafQueue.length; };
+    window.cancelAnimationFrame  = () => {};
+    window.__tick = dtMs => {
+      _fakeMs += dtMs;
+      const cbs = _rafQueue.splice(0);
+      cbs.forEach(cb => cb(performance.now()));
+    };
+  })();
+`;
 
-const page = await browser.newPage();
-await page.setViewportSize({ width: 1280, height: 720 });
-
-// ── Inject deterministic clock BEFORE page/Three.js loads ────────────────────
-await page.addInitScript(() => {
-  let _fakeMs = 0;
-
-  // Override performance.now — Three.js Clock reads this directly
-  const _perfBase = performance.now.bind(performance)();
-  performance.now = () => _fakeMs + _perfBase;
-
-  // Override Date.now for completeness
-  const _dateBase = Date.now();
-  Date.now = () => Math.floor(_fakeMs) + _dateBase;
-
-  // Replace RAF with a manual queue
-  let _rafQueue = [];
-  window.requestAnimationFrame = (cb) => { _rafQueue.push(cb); return _rafQueue.length; };
-  window.cancelAnimationFrame  = () => {};
-
-  // __tick(dt): advance fake time by dt ms, fire all queued RAF callbacks once
-  window.__tick = (dtMs) => {
-    _fakeMs += dtMs;
-    const cbs = _rafQueue.splice(0);
-    cbs.forEach(cb => cb(performance.now()));
-    return cbs.length;
-  };
-});
-
-page.on('pageerror', e => console.error('PAGE ERROR:', e.message));
-page.on('console',   m => { if (m.type() === 'error') console.error('CONSOLE ERR:', m.text().slice(0, 200)); });
-
-await page.goto('http://localhost:8765/');
-await page.waitForSelector('canvas', { timeout: 15000 });
-
-// Let synchronous init code finish (importmap resolution, scene build)
-await page.waitForTimeout(1000);
-
-// Prime the RAF queue: tick a few frames so Three.js Clock starts cleanly
-for (let i = 0; i < 10; i++) {
-  await page.evaluate((dt) => window.__tick(dt), FRAME_DT);
+async function launchPage(startFakeMs) {
+  const browser = await chromium.launch({
+    args: ['--no-sandbox', '--disable-setuid-sandbox',
+           '--use-gl=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'],
+    headless: true,
+  });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(INIT_SCRIPT(startFakeMs));
+  page.on('pageerror', e => console.error('  PAGE ERR:', e.message.slice(0, 120)));
+  await page.goto(URL);
+  await page.waitForSelector('canvas', { timeout: 15000 });
+  await page.waitForTimeout(800);  // let sync init finish
+  return { browser, page };
 }
 
-// ── Capture loop ─────────────────────────────────────────────────────────────
-console.log('Starting deterministic capture...');
-let frameNum = 0;
+async function tickTo(page, targetFakeMs, currentFakeMs) {
+  // Advance fake time in chunks to reach targetFakeMs
+  while (currentFakeMs < targetFakeMs) {
+    const dt = Math.min(FRAME_DT, targetFakeMs - currentFakeMs);
+    await page.evaluate(dt => window.__tick(dt), dt);
+    currentFakeMs += dt;
+  }
+  return currentFakeMs;
+}
+
+// ── Capture each stage in a fresh browser session ────────────────────────────
+let globalFrame = 0;
+let accumulatedMs = 0;
 
 for (let stageIdx = 0; stageIdx < STAGE_FRAMES.length; stageIdx++) {
-  console.log(`  Stage ${stageIdx}: ${STAGE_FRAMES[stageIdx]} frames`);
+  const stageFrames = STAGE_FRAMES[stageIdx];
+  console.log(`\nStage ${stageIdx}: launching browser (fake time starts at ${accumulatedMs.toFixed(0)}ms)...`);
 
-  for (let i = 0; i < STAGE_FRAMES[stageIdx]; i++) {
-    // 1. Advance animation by exactly one frame
-    await page.evaluate((dt) => window.__tick(dt), FRAME_DT);
+  const { browser, page } = await launchPage(accumulatedMs);
 
-    // 2. Capture the rendered canvas
-    const framePath = path.join(FRAMES_DIR, `frame_${String(frameNum).padStart(5, '0')}.png`);
-    await page.screenshot({ path: framePath, type: 'png' });
-    frameNum++;
+  // Prime: run 10 warm-up ticks so Three.js Clock initialises cleanly
+  for (let w = 0; w < 10; w++) {
+    await page.evaluate(dt => window.__tick(dt), FRAME_DT);
   }
 
-  // Advance to next stage (keyboard event is processed on next tick)
-  if (stageIdx < STAGE_FRAMES.length - 1) {
+  // Fast-forward through all previous stages (no screenshots — just advance time + press keys)
+  let fakeMs = accumulatedMs + 10 * FRAME_DT;
+
+  for (let s = 0; s < stageIdx; s++) {
+    console.log(`  Fast-forwarding past stage ${s}...`);
+    // Advance through this stage's full duration
+    const stageDurationMs = STAGE_FRAMES[s] * FRAME_DT;
+    fakeMs = await tickTo(page, fakeMs + stageDurationMs, fakeMs);
     await page.keyboard.press('ArrowRight');
+    // Small settle after key press
+    await page.evaluate(dt => window.__tick(dt), FRAME_DT * 5);
+    fakeMs += FRAME_DT * 5;
   }
+
+  // If not stage 0, press key to enter this stage and let one settle tick run
+  if (stageIdx > 0) {
+    // Already pressed key at end of fast-forward above; give a few ticks to apply
+    await page.evaluate(dt => window.__tick(dt), FRAME_DT * 5);
+    fakeMs += FRAME_DT * 5;
+  }
+
+  console.log(`  Recording ${stageFrames} frames...`);
+  for (let i = 0; i < stageFrames; i++) {
+    await page.evaluate(dt => window.__tick(dt), FRAME_DT);
+    fakeMs += FRAME_DT;
+
+    const framePath = path.join(FRAMES_DIR, `frame_${String(globalFrame).padStart(5, '0')}.png`);
+    await page.screenshot({ path: framePath, type: 'png' });
+    globalFrame++;
+
+    if (i % 120 === 0) process.stdout.write(`  ${i}/${stageFrames}\r`);
+  }
+  console.log(`  Done. ${stageFrames} frames captured.`);
+
+  accumulatedMs += stageFrames * FRAME_DT;
+  await browser.close();
 }
 
-console.log(`\nCaptured ${frameNum} frames. Encoding...`);
-await browser.close();
+console.log(`\nAll ${globalFrame} frames captured. Encoding at ${FPS}fps...`);
 
-// Kill HTTP server if still running
+// Kill HTTP server
 try { execSync('pkill -f "http.server 8765"'); } catch {}
 
-// ── Encode with imageio (ffmpeg not required) ─────────────────────────────────
+// Encode
 execSync(
   `python3 -c "
-import imageio.v2 as imageio, glob
+import imageio.v2 as imageio, glob, os
 paths = sorted(glob.glob('${FRAMES_DIR}/frame_*.png'))
-print(f'Encoding {len(paths)} frames at ${FPS}fps...')
+print(f'Encoding {len(paths)} frames...')
 w = imageio.get_writer('${OUTPUT}', fps=${FPS}, codec='libx264', quality=8)
-for p in paths: w.append_data(imageio.imread(p))
+for i, p in enumerate(paths):
+    w.append_data(imageio.imread(p))
+    if i % 300 == 0: print(f'  {i}/{len(paths)}')
 w.close()
-print('Done.')
+print(f'Done: {os.path.getsize(\"${OUTPUT}\")//1024}KB')
 "`,
   { stdio: 'inherit' }
 );
 
 rmSync(FRAMES_DIR, { recursive: true });
-console.log(`\nVideo: ${OUTPUT}`);
+console.log(`\nVideo saved: ${OUTPUT}`);
