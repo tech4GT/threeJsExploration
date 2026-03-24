@@ -628,3 +628,69 @@ scene.add(lod);
 // Check memory usage
 console.log(renderer.info); // { render: { calls, triangles }, memory: { geometries, textures } }
 ```
+
+---
+
+## Visual Iteration Loop (Playwright → Analyze → Improve)
+
+This repo has a **headless capture pipeline** that enables a fully automated visual feedback loop for animation development. Claude can see rendered frames as images, analyze them, identify issues, fix the code, and re-capture — all without a human in the loop.
+
+### How it works
+
+```
+Code change → Playwright capture → Read frames as images → Analyze visually → Fix → Repeat
+```
+
+1. **Serve the project** locally:
+   ```bash
+   python3 -m http.server 8765 --directory projects/<name>/
+   ```
+
+2. **Capture frames** using `capture.mjs` (Playwright + SwiftShader software WebGL):
+   ```js
+   const browser = await chromium.launch({
+     args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'],
+     headless: true,
+   });
+   // screenshot each frame, advance stages via page.keyboard.press('ArrowRight')
+   ```
+
+3. **Analyze key frames** by reading PNG files with the `Read` tool — Claude sees them as images and can assess:
+   - Geometry correctness (shapes, positions, scale)
+   - Lighting and material appearance
+   - Camera framing and transitions
+   - Animation timing (compare frame N vs frame N+50)
+   - UI overlay legibility
+
+4. **Encode video** via imageio (ffmpeg not required):
+   ```python
+   import imageio.v2 as imageio
+   writer = imageio.get_writer('output.mp4', fps=24, codec='libx264', quality=7)
+   for path in sorted(frame_paths):
+       writer.append_data(imageio.imread(path))
+   writer.close()
+   ```
+
+### Environment notes
+- **CDN is blocked** in this environment — always use `vendor/three/` local bundle, not cdn.jsdelivr.net
+- **ffmpeg is not available** system-wide — use `imageio[ffmpeg]` (`pip3 install imageio[ffmpeg]`)
+- **Playwright is available** globally at `/opt/node22/lib/node_modules/playwright`
+  - Import with: `const { chromium } = require('/opt/node22/lib/node_modules/playwright')`
+  - Chromium binary is pre-installed in `~/.cache/ms-playwright/`
+- **Xvfb is available** at `/usr/bin/Xvfb` if a display is ever needed
+- **SwiftShader** provides software WebGL — no GPU needed, all Three.js features work
+
+### Iteration strategy
+- Pick **5–8 representative frames** spread across the animation to check each stage
+- Frame index math: `stageStartFrame = sum(STAGE_DURATIONS[:i]) * FPS`
+- For transitions, sample a frame at ~50% through the transition duration
+- Check both geometry stages AND the fade/transition frames between them
+- Use `page.evaluate(() => window.cameraSystem.goToStage(n))` to jump directly to a stage (requires `window.cameraSystem = cameraSystem` in main.js)
+
+### Exposing globals for Playwright control
+Add to `main.js` during development to enable programmatic stage control:
+```js
+window.cameraSystem = cameraSystem;   // allows page.evaluate(() => window.cameraSystem.goToStage(3))
+window.scene = scene;                  // inspect scene graph from Playwright
+window.renderer = renderer;            // check renderer.info.render.calls etc.
+```
