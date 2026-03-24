@@ -1,3 +1,14 @@
+/**
+ * Deterministic frame capture for Three.js animations.
+ *
+ * Key insight: page.screenshot() has variable latency (10–50ms), so a real-time
+ * capture produces jitter because Three.js Clock advances with wall-clock time.
+ *
+ * Fix: override performance.now() and requestAnimationFrame BEFORE page load so
+ * time only advances by exactly 1/FPS seconds per captured frame. The animation
+ * runs in lockstep with the capture loop — perfectly smooth output.
+ */
+
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { chromium } = require('/opt/node22/lib/node_modules/playwright');
@@ -7,8 +18,18 @@ import path from 'path';
 
 const FRAMES_DIR = '/tmp/pencil-atom-frames';
 const OUTPUT     = '/home/user/threeJsExploration/pencil-to-atom.mp4';
+const FPS        = 60;
+const FRAME_DT   = 1000 / FPS;  // ms advanced per captured frame
 
-// Clean + create frames dir
+// How many frames to record per stage
+const STAGE_FRAMES = [
+  5  * FPS,   // Stage 0 — pencil
+  5  * FPS,   // Stage 1 — graphite tip zoom
+  5  * FPS,   // Stage 2 — graphene layers
+  5  * FPS,   // Stage 3 — graphene sheet
+  6  * FPS,   // Stage 4 — carbon atom
+];
+
 try { rmSync(FRAMES_DIR, { recursive: true }); } catch {}
 mkdirSync(FRAMES_DIR, { recursive: true });
 
@@ -16,10 +37,9 @@ const browser = await chromium.launch({
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--use-gl=swiftshader',          // software WebGL
+    '--use-gl=swiftshader',
     '--enable-webgl',
     '--ignore-gpu-blocklist',
-    '--disable-web-security',
   ],
   headless: true,
 });
@@ -27,67 +47,88 @@ const browser = await chromium.launch({
 const page = await browser.newPage();
 await page.setViewportSize({ width: 1280, height: 720 });
 
-// Expose a hook so we can trigger stage changes from outside
+// ── Inject deterministic clock BEFORE page/Three.js loads ────────────────────
 await page.addInitScript(() => {
-  window.__stageQueue = [];
-  window.__advanceStage = () => { window.__stageQueue.push(1); };
+  let _fakeMs = 0;
+
+  // Override performance.now — Three.js Clock reads this directly
+  const _perfBase = performance.now.bind(performance)();
+  performance.now = () => _fakeMs + _perfBase;
+
+  // Override Date.now for completeness
+  const _dateBase = Date.now();
+  Date.now = () => Math.floor(_fakeMs) + _dateBase;
+
+  // Replace RAF with a manual queue
+  let _rafQueue = [];
+  window.requestAnimationFrame = (cb) => { _rafQueue.push(cb); return _rafQueue.length; };
+  window.cancelAnimationFrame  = () => {};
+
+  // __tick(dt): advance fake time by dt ms, fire all queued RAF callbacks once
+  window.__tick = (dtMs) => {
+    _fakeMs += dtMs;
+    const cbs = _rafQueue.splice(0);
+    cbs.forEach(cb => cb(performance.now()));
+    return cbs.length;
+  };
 });
 
+page.on('pageerror', e => console.error('PAGE ERROR:', e.message));
+page.on('console',   m => { if (m.type() === 'error') console.error('CONSOLE ERR:', m.text().slice(0, 200)); });
+
 await page.goto('http://localhost:8765/');
+await page.waitForSelector('canvas', { timeout: 15000 });
 
-// Wait for Three.js canvas to appear
-await page.waitForSelector('canvas', { timeout: 10000 });
+// Let synchronous init code finish (importmap resolution, scene build)
+await page.waitForTimeout(1000);
 
-// Give the animation loop time to start
-await page.waitForTimeout(2000);
+// Prime the RAF queue: tick a few frames so Three.js Clock starts cleanly
+for (let i = 0; i < 10; i++) {
+  await page.evaluate((dt) => window.__tick(dt), FRAME_DT);
+}
 
-// Capture frames at ~24fps
-// Schedule: capture 4s per stage × 5 stages = 20s total
-const FPS        = 24;
-const FRAME_MS   = 1000 / FPS;
-// Stage durations in ms
-const STAGE_DURATIONS = [4000, 4000, 4000, 4000, 5000]; // ms per stage
+// ── Capture loop ─────────────────────────────────────────────────────────────
+console.log('Starting deterministic capture...');
+let frameNum = 0;
 
-let frame    = 0;
-let stageIdx = 0;
-let stageElapsed = 0;
-const stageAdvanceDelay = 200; // ms after advance before we start counting next stage
+for (let stageIdx = 0; stageIdx < STAGE_FRAMES.length; stageIdx++) {
+  console.log(`  Stage ${stageIdx}: ${STAGE_FRAMES[stageIdx]} frames`);
 
-console.log('Starting capture...');
+  for (let i = 0; i < STAGE_FRAMES[stageIdx]; i++) {
+    // 1. Advance animation by exactly one frame
+    await page.evaluate((dt) => window.__tick(dt), FRAME_DT);
 
-for (const stageDuration of STAGE_DURATIONS) {
-  console.log(`Recording stage ${stageIdx}...`);
-  const stageFrames = Math.ceil(stageDuration / FRAME_MS);
-
-  for (let i = 0; i < stageFrames; i++) {
-    const framePath = path.join(FRAMES_DIR, `frame_${String(frame).padStart(5, '0')}.png`);
+    // 2. Capture the rendered canvas
+    const framePath = path.join(FRAMES_DIR, `frame_${String(frameNum).padStart(5, '0')}.png`);
     await page.screenshot({ path: framePath, type: 'png' });
-    frame++;
-    await page.waitForTimeout(FRAME_MS);
+    frameNum++;
   }
 
-  // Advance to next stage (unless last)
-  if (stageIdx < STAGE_DURATIONS.length - 1) {
+  // Advance to next stage (keyboard event is processed on next tick)
+  if (stageIdx < STAGE_FRAMES.length - 1) {
     await page.keyboard.press('ArrowRight');
-    await page.waitForTimeout(stageAdvanceDelay);
-    stageIdx++;
   }
 }
 
-console.log(`Captured ${frame} frames. Encoding video...`);
+console.log(`\nCaptured ${frameNum} frames. Encoding...`);
 await browser.close();
 
-// Kill the HTTP server
+// Kill HTTP server if still running
 try { execSync('pkill -f "http.server 8765"'); } catch {}
 
-// Encode with ffmpeg
+// ── Encode with imageio (ffmpeg not required) ─────────────────────────────────
 execSync(
-  `ffmpeg -y -framerate ${FPS} -i "${FRAMES_DIR}/frame_%05d.png" ` +
-  `-vcodec libx264 -crf 20 -pix_fmt yuv420p "${OUTPUT}"`,
+  `python3 -c "
+import imageio.v2 as imageio, glob
+paths = sorted(glob.glob('${FRAMES_DIR}/frame_*.png'))
+print(f'Encoding {len(paths)} frames at ${FPS}fps...')
+w = imageio.get_writer('${OUTPUT}', fps=${FPS}, codec='libx264', quality=8)
+for p in paths: w.append_data(imageio.imread(p))
+w.close()
+print('Done.')
+"`,
   { stdio: 'inherit' }
 );
 
-// Cleanup frames
 rmSync(FRAMES_DIR, { recursive: true });
-
-console.log(`\nDone! Video saved to: ${OUTPUT}`);
+console.log(`\nVideo: ${OUTPUT}`);
