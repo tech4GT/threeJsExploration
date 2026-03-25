@@ -7,6 +7,7 @@ import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { buildPencil } from './stages/pencil.js';
 import { buildGrapheneLayers, buildGrapheneSheet } from './stages/graphene.js';
 import { buildAtom } from './stages/atom.js';
+import { buildLogo } from './stages/logo.js';
 import { CameraSystem } from './systems/camera.js';
 
 // ─── Renderer ────────────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
   0.2,   // initial strength (stage 0)
   0.4,   // radius
-  0.85   // threshold
+  0.82   // threshold (slightly lower so emissive glows bloom at stage 2+)
 );
 composer.addPass(bloomPass);
 
@@ -49,27 +50,27 @@ composer.addPass(fxaaPass);
 
 // ─── Build all stages ─────────────────────────────────────────────────────────
 
-// Shared uniforms for graphene sheet shader
 const sheetUniforms = { uTime: { value: 0 } };
 
 const pencil         = buildPencil(scene);
 const grapheneLayers = buildGrapheneLayers(scene);
 const grapheneSheet  = buildGrapheneSheet(scene, sheetUniforms);
 const atom           = buildAtom(scene);
+const logo           = buildLogo(scene);
 
-// ─── Stage visibility ────────────────────────────────────────────────────────
-// All groups start invisible EXCEPT pencil
+// ─── Stage visibility ─────────────────────────────────────────────────────────
 
 grapheneLayers.group.visible = false;
 grapheneSheet.group.visible  = false;
 atom.group.visible           = false;
+logo.group.visible           = false;
 pencil.group.visible         = true;
 
-// ─── Camera system ───────────────────────────────────────────────────────────
+// ─── Camera system ────────────────────────────────────────────────────────────
 
 const cameraSystem = new CameraSystem(camera);
 
-// ─── Stage labels ────────────────────────────────────────────────────────────
+// ─── Stage metadata ───────────────────────────────────────────────────────────
 
 const STAGE_LABELS = [
   'Pencil — Macro Scale',
@@ -77,29 +78,39 @@ const STAGE_LABELS = [
   'Graphene Layers — Micro Scale',
   'Graphene Sheet — Nano Scale',
   'Carbon Atom — Atomic Scale',
+  'Carbon — The Element',
 ];
-
-// ─── Stage groups ────────────────────────────────────────────────────────────
 
 const stageGroups = [
   pencil.group,
-  pencil.group,           // stage 1 reuses pencil (camera just zooms in)
+  pencil.group,           // stage 1 reuses pencil (camera zooms in)
   grapheneLayers.group,
   grapheneSheet.group,
   atom.group,
+  logo.group,
+];
+
+// Bloom strengths per stage
+const WAYPOINTS_BLOOM = [0.2, 0.5, 1.2, 1.6, 1.8, 2.4];
+
+// Near/far per stage
+const NEAR_FAR = [
+  [0.1,   200],
+  [0.05,   20],
+  [0.001,  30],
+  [0.001,  20],
+  [0.01,   50],
+  [0.1,   100],
 ];
 
 // ─── Fade system ─────────────────────────────────────────────────────────────
 
-let activeFades = [];  // { group, targetOpacity, duration, elapsed }
+let activeFades = [];
 
 function startFade(group, targetOpacity, duration) {
-  // set all materials transparent before fade
   group.traverse(obj => {
     if (obj.isMesh || obj.isLine || obj.isLineSegments || obj.isLineLoop) {
-      if (obj.material) {
-        obj.material.transparent = true;
-      }
+      if (obj.material) obj.material.transparent = true;
     }
   });
   activeFades.push({ group, targetOpacity, duration, elapsed: 0 });
@@ -118,57 +129,60 @@ function updateFades(delta) {
     });
     if (t >= 1) {
       if (fade.targetOpacity === 0) fade.group.visible = false;
-      return false; // remove completed fade
+      return false;
     }
     return true;
   });
 }
 
-// ─── Bloom strengths per stage ───────────────────────────────────────────────
-
-const WAYPOINTS_BLOOM = [0.2, 0.5, 1.0, 1.4, 1.8];
-
-// ─── onStageChange handler ───────────────────────────────────────────────────
+// ─── onStageChange handler ────────────────────────────────────────────────────
 
 cameraSystem.onStageChange((fromStage, toStage) => {
-  // Show/hide groups — stages 0 and 1 both use pencil.group
-  const prevGroup = stageGroups[fromStage];
-  const nextGroup = stageGroups[toStage];
 
-  if (prevGroup !== nextGroup) {
-    // Fade out old group (unless it's the pencil staying visible for stage 1)
-    if (fromStage !== 0 || toStage !== 1) {
-      startFade(prevGroup, 0, 1.0);
-    }
-    // Show and fade in new group
-    nextGroup.visible = true;
-    // Set all mesh opacities to 0 first so fade-in works
-    nextGroup.traverse(obj => {
-      if ((obj.isMesh || obj.isLine || obj.isLineSegments || obj.isLineLoop) && obj.material) {
-        obj.material.transparent = true;
-        obj.material.opacity = 0;
+  // ── Special: atom collapse → logo reveal ───────────────────────────────
+  if (fromStage === 4 && toStage === 5) {
+    atom.startCollapse(() => logo.startReveal());
+    // No default fade — collapse handles atom visibility; logo.startReveal handles logo
+  } else {
+    const prevGroup = stageGroups[fromStage];
+    const nextGroup = stageGroups[toStage];
+
+    if (prevGroup !== nextGroup) {
+      if (fromStage !== 0 || toStage !== 1) {
+        startFade(prevGroup, 0, 1.0);
       }
-    });
-    startFade(nextGroup, 1, 1.5);
+      nextGroup.visible = true;
+      nextGroup.traverse(obj => {
+        if ((obj.isMesh || obj.isLine || obj.isLineSegments || obj.isLineLoop) && obj.material) {
+          obj.material.transparent = true;
+          obj.material.opacity = 0;
+        }
+      });
+      startFade(nextGroup, 1, 1.5);
+    }
   }
 
-  // Update bloom
+  // ── Bloom ─────────────────────────────────────────────────────────────
   bloomPass.strength = WAYPOINTS_BLOOM[toStage];
 
-  // Update camera near/far
-  const NEAR_FAR = [
-    [0.1, 200], [0.05, 20], [0.001, 30], [0.001, 20], [0.01, 50]
-  ];
+  // ── Near/far ──────────────────────────────────────────────────────────
   const [near, far] = NEAR_FAR[toStage];
   camera.near = near;
   camera.far  = far;
   camera.updateProjectionMatrix();
 
-  // Update UI label
+  // ── Label ─────────────────────────────────────────────────────────────
   const labelEl = document.getElementById('stage-label');
   if (labelEl) labelEl.textContent = STAGE_LABELS[toStage];
 
-  // Shadows only needed for stage 0 and 1
+  const hintEl = document.getElementById('hint');
+  if (hintEl) {
+    hintEl.textContent = toStage === STAGE_LABELS.length - 1
+      ? '← to go back'
+      : '← → or Space to travel through scales';
+  }
+
+  // Shadows only needed for pencil stages
   renderer.shadowMap.enabled = toStage <= 1;
 });
 
@@ -187,6 +201,7 @@ function animate() {
 
   cameraSystem.update(delta);
   atom.update(elapsed);
+  logo.update(elapsed);
   sheetUniforms.uTime.value = elapsed;
   updateFades(delta);
 

@@ -20,8 +20,6 @@ function hexGrid(R, bondLength) {
 
 // ---------------------------------------------------------------------------
 // Bond generation helpers
-// For each unique atom pair within bondLength * 1.1, emit two vertices.
-// Returns a Float32Array of [x0,y,z0, x1,y,z1, ...] ready for BufferGeometry.
 // ---------------------------------------------------------------------------
 function buildBondPositions(atoms, yLevel, bondLength) {
   const threshold = bondLength * 1.1;
@@ -53,47 +51,41 @@ export function buildGrapheneLayers(scene) {
   const numLayers  = 5;
   const layerSpacing = 0.3;
 
-  // AB-stacking shift applied to odd layers
   const shiftX = bondLength * 0.5;
   const shiftZ = bondLength * Math.sqrt(3) / 6;
 
-  // Shared atom material (one instance reused across all layers)
+  // Bright cyan-blue atoms — high emissiveIntensity so they glow against black
   const atomMaterial = new THREE.MeshStandardMaterial({
-    color:            new THREE.Color('#333344'),
-    emissive:         new THREE.Color('#224466'),
-    emissiveIntensity: 0.3,
+    color:             new THREE.Color('#003366'),
+    emissive:          new THREE.Color('#0088ee'),
+    emissiveIntensity: 2.5,
+    roughness:         0.3,
+    metalness:         0.1,
   });
 
-  // Shared bond material
+  // Bright bond lines
   const bondMaterial = new THREE.LineBasicMaterial({
-    color:       new THREE.Color('#334488'),
-    opacity:     0.7,
-    transparent: true,
+    color: new THREE.Color('#44aaff'),
   });
 
   const group = new THREE.Group();
 
-  // Generate base atom positions once; shift per-layer as needed
   const baseAtoms = hexGrid(R, bondLength);
   const atomCount = baseAtoms.length;
-
-  // Y positions: centered around 0
-  const yStart = -((numLayers - 1) * layerSpacing) / 2;
-
-  const matrix = new THREE.Matrix4();
-  const atomGeo = new THREE.SphereGeometry(0.08, 6, 4);
+  const yStart    = -((numLayers - 1) * layerSpacing) / 2;
+  const matrix    = new THREE.Matrix4();
+  const atomGeo   = new THREE.SphereGeometry(0.08, 6, 4);
 
   for (let l = 0; l < numLayers; l++) {
-    const y    = yStart + l * layerSpacing;
+    const y     = yStart + l * layerSpacing;
     const isOdd = l % 2 !== 0;
 
-    // Apply AB-stacking offset for odd layers
     const atoms = baseAtoms.map(([x, z]) => [
       isOdd ? x + shiftX : x,
       isOdd ? z + shiftZ : z,
     ]);
 
-    // --- Atoms ---
+    // Atoms
     const instancedMesh = new THREE.InstancedMesh(atomGeo, atomMaterial, atomCount);
     for (let i = 0; i < atomCount; i++) {
       const [x, z] = atoms[i];
@@ -103,13 +95,17 @@ export function buildGrapheneLayers(scene) {
     instancedMesh.instanceMatrix.needsUpdate = true;
     group.add(instancedMesh);
 
-    // --- Bonds ---
-    const posArray   = buildBondPositions(atoms, y, bondLength);
-    const bondGeo    = new THREE.BufferGeometry();
+    // Bonds
+    const posArray = buildBondPositions(atoms, y, bondLength);
+    const bondGeo  = new THREE.BufferGeometry();
     bondGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-    const lines      = new THREE.LineSegments(bondGeo, bondMaterial);
-    group.add(lines);
+    group.add(new THREE.LineSegments(bondGeo, bondMaterial));
   }
+
+  // Dedicated point light so the lattice is lit from within
+  const glow = new THREE.PointLight(0x2299ff, 2.5, 18);
+  glow.position.set(0, 3, 0);
+  group.add(glow);
 
   scene.add(group);
   return { group };
@@ -118,29 +114,27 @@ export function buildGrapheneLayers(scene) {
 // ---------------------------------------------------------------------------
 // Stage 3 — buildGrapheneSheet(scene, sharedUniforms)
 // One large graphene sheet (nano scale) with a pulsing bond shader.
-// sharedUniforms: { uTime: { value: 0 } }
-// Caller must update sharedUniforms.uTime.value = elapsed each frame.
 // ---------------------------------------------------------------------------
 export function buildGrapheneSheet(scene, sharedUniforms) {
   const R          = 7;
   const bondLength = 0.42;
 
-  const atoms = hexGrid(R, bondLength);
+  const atoms     = hexGrid(R, bondLength);
   const atomCount = atoms.length;
 
-  // --- Atom material ---
+  // Bright, saturated cyan atoms
   const atomMaterial = new THREE.MeshStandardMaterial({
-    color:            new THREE.Color('#44aaff'),
-    emissive:         new THREE.Color('#0055aa'),
-    emissiveIntensity: 1.0,
-    metalness:        0.2,
-    roughness:        0.3,
+    color:             new THREE.Color('#55bbff'),
+    emissive:          new THREE.Color('#0077ff'),
+    emissiveIntensity: 2.5,
+    metalness:         0.2,
+    roughness:         0.25,
   });
 
-  // --- Bond ShaderMaterial (pulsing opacity) ---
+  // Pulsing bond shader — brighter base values
   const bondMaterial = new THREE.ShaderMaterial({
-    uniforms:     sharedUniforms,
-    transparent:  true,
+    uniforms:    sharedUniforms,
+    transparent: true,
     vertexShader: /* glsl */`
       void main() {
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -149,8 +143,8 @@ export function buildGrapheneSheet(scene, sharedUniforms) {
     fragmentShader: /* glsl */`
       uniform float uTime;
       void main() {
-        float pulse = 0.5 + 0.45 * sin(uTime * 2.0);
-        gl_FragColor = vec4(0.3, 0.7, 1.0, pulse);
+        float pulse = 0.55 + 0.45 * sin(uTime * 2.0);
+        gl_FragColor = vec4(0.35, 0.80, 1.0, pulse);
       }
     `,
   });
@@ -158,11 +152,9 @@ export function buildGrapheneSheet(scene, sharedUniforms) {
   const group = new THREE.Group();
   const y     = 0;
 
-  // --- Atoms (InstancedMesh) ---
-  const atomGeo      = new THREE.SphereGeometry(0.08, 6, 4);
+  const atomGeo       = new THREE.SphereGeometry(0.08, 6, 4);
   const instancedMesh = new THREE.InstancedMesh(atomGeo, atomMaterial, atomCount);
-  const matrix       = new THREE.Matrix4();
-
+  const matrix        = new THREE.Matrix4();
   for (let i = 0; i < atomCount; i++) {
     const [x, z] = atoms[i];
     matrix.setPosition(x, y, z);
@@ -171,12 +163,15 @@ export function buildGrapheneSheet(scene, sharedUniforms) {
   instancedMesh.instanceMatrix.needsUpdate = true;
   group.add(instancedMesh);
 
-  // --- Bonds (LineSegments with ShaderMaterial) ---
   const posArray = buildBondPositions(atoms, y, bondLength);
   const bondGeo  = new THREE.BufferGeometry();
   bondGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-  const lines    = new THREE.LineSegments(bondGeo, bondMaterial);
-  group.add(lines);
+  group.add(new THREE.LineSegments(bondGeo, bondMaterial));
+
+  // Dedicated light so atoms receive illumination from above
+  const glow = new THREE.PointLight(0x44aaff, 3.0, 20);
+  glow.position.set(0, 6, 0);
+  group.add(glow);
 
   scene.add(group);
   return { group, bondMaterial };

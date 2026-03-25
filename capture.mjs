@@ -29,6 +29,7 @@ const STAGE_FRAMES = [
   5  * FPS,   // Stage 2 — graphene layers
   5  * FPS,   // Stage 3 — graphene sheet
   6  * FPS,   // Stage 4 — carbon atom
+  7  * FPS,   // Stage 5 — atom collapse + logo reveal
 ];
 
 const TOTAL_FRAMES = STAGE_FRAMES.reduce((a, b) => a + b, 0);
