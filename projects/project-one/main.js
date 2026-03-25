@@ -38,9 +38,9 @@ composer.addPass(new RenderPass(scene, camera));
 
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.2,   // initial strength (stage 0)
-  0.4,   // radius
-  0.82   // threshold (slightly lower so emissive glows bloom at stage 2+)
+  0.2,    // initial strength (stage 0)
+  0.30,   // initial radius — tighter than default so glow hugs surfaces
+  0.82    // threshold
 );
 composer.addPass(bloomPass);
 
@@ -92,6 +92,10 @@ const stageGroups = [
 
 // Bloom strengths per stage
 const WAYPOINTS_BLOOM = [0.2, 0.5, 1.2, 1.6, 1.8, 2.4];
+
+// Bloom radius per stage: smaller = tighter/crisper glow (no blurry halo).
+// Pencil gets moderate spread; atomic structures get tight glow so edges stay sharp.
+const WAYPOINTS_BLOOM_RADIUS = [0.28, 0.22, 0.14, 0.12, 0.10, 0.20];
 
 // Near/far per stage
 const NEAR_FAR = [
@@ -164,6 +168,7 @@ cameraSystem.onStageChange((fromStage, toStage) => {
 
   // ── Bloom ─────────────────────────────────────────────────────────────
   bloomPass.strength = WAYPOINTS_BLOOM[toStage];
+  bloomPass.radius   = WAYPOINTS_BLOOM_RADIUS[toStage];
 
   // ── Near/far ──────────────────────────────────────────────────────────
   const [near, far] = NEAR_FAR[toStage];

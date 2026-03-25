@@ -46,10 +46,10 @@ function buildBondPositions(atoms, yLevel, bondLength) {
 // Five stacked graphene layers (micro scale).
 // ---------------------------------------------------------------------------
 export function buildGrapheneLayers(scene) {
-  const R          = 4;
-  const bondLength = 0.42;
-  const numLayers  = 5;
-  const layerSpacing = 0.3;
+  const R            = 5;       // wider grid so sheets fill the side-view frame
+  const bondLength   = 0.42;
+  const numLayers    = 3;       // fewer layers → each one clearly distinct
+  const layerSpacing = 0.55;    // more gap so stacking is legible from the side
 
   const shiftX = bondLength * 0.5;
   const shiftZ = bondLength * Math.sqrt(3) / 6;

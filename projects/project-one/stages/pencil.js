@@ -11,8 +11,10 @@ export function buildPencil(scene) {
     color: '#f0ece0',    // white/cream exposed wood
     roughness: 0.82, metalness: 0.0, flatShading: true,
   });
+  // Graphite is dark grey but polished — high metalness catches specular highlights
+  // so it reads against the dark background even without emissive.
   const graphiteMat = new THREE.MeshStandardMaterial({
-    color: '#0a0a10', roughness: 0.30, metalness: 0.18,
+    color: '#22222e', roughness: 0.18, metalness: 0.65,
   });
   const ferruleMat = new THREE.MeshStandardMaterial({
     color: '#c8d4dc', roughness: 0.10, metalness: 0.97,
@@ -99,6 +101,12 @@ export function buildPencil(scene) {
   const fill = new THREE.DirectionalLight(0x6699cc, 0.9);
   fill.position.set(-5, 2, 5);
   scene.add(fill);
+
+  // Rim light from below-front aimed at the tip so the polished graphite
+  // catches a specular highlight and reads against the dark background.
+  const rimLight = new THREE.DirectionalLight(0xaaccff, 2.2);
+  rimLight.position.set(1, -10, 4);
+  scene.add(rimLight);
 
   const ambient = new THREE.AmbientLight(0x334466, 1.8);
   scene.add(ambient);
