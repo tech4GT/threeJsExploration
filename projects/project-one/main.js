@@ -139,14 +139,49 @@ function updateFades(delta) {
   });
 }
 
+// ─── Bloom flash helper ───────────────────────────────────────────────────────
+// Set this to a positive value to spike bloom strength for that many seconds.
+let _bloomFlash = 0;
+
 // ─── onStageChange handler ────────────────────────────────────────────────────
 
 cameraSystem.onStageChange((fromStage, toStage) => {
 
+  // ── Special: pencil break → graphene layers ────────────────────────────
+  if (fromStage === 1 && toStage === 2) {
+    // Run the snap animation; fade in graphene only once the halves have flown apart.
+    pencil.startBreak(() => {
+      pencil.group.visible = false;
+      _bloomFlash = 0.45;   // brief white flash when the core is "exposed"
+      const ng = grapheneLayers.group;
+      ng.visible = true;
+      ng.traverse(obj => {
+        if ((obj.isMesh || obj.isLine || obj.isLineSegments || obj.isLineLoop) && obj.material) {
+          obj.material.transparent = true;
+          obj.material.opacity     = 0;
+        }
+      });
+      startFade(ng, 1, 1.2);
+    });
+    // Don't do the default fade — let the break animation control visibility.
+
   // ── Special: atom collapse → logo reveal ───────────────────────────────
-  if (fromStage === 4 && toStage === 5) {
+  } else if (fromStage === 4 && toStage === 5) {
     atom.startCollapse(() => logo.startReveal());
-    // No default fade — collapse handles atom visibility; logo.startReveal handles logo
+
+  // ── Special: going back from stage 2 → stage 1 ─────────────────────────
+  } else if (fromStage === 2 && toStage === 1) {
+    pencil.resetBreak();
+    grapheneLayers.group.visible = false;
+    pencil.group.visible = true;
+    pencil.group.traverse(obj => {
+      if ((obj.isMesh || obj.isLine || obj.isLineSegments || obj.isLineLoop) && obj.material) {
+        obj.material.transparent = true;
+        obj.material.opacity     = 0;
+      }
+    });
+    startFade(pencil.group, 1, 1.0);
+
   } else {
     const prevGroup = stageGroups[fromStage];
     const nextGroup = stageGroups[toStage];
@@ -159,7 +194,7 @@ cameraSystem.onStageChange((fromStage, toStage) => {
       nextGroup.traverse(obj => {
         if ((obj.isMesh || obj.isLine || obj.isLineSegments || obj.isLineLoop) && obj.material) {
           obj.material.transparent = true;
-          obj.material.opacity = 0;
+          obj.material.opacity     = 0;
         }
       });
       startFade(nextGroup, 1, 1.5);
@@ -205,10 +240,18 @@ function animate() {
   const elapsed = clock.getElapsedTime();
 
   cameraSystem.update(delta);
+  pencil.update(elapsed);   // drives the break snap animation
   atom.update(elapsed);
   logo.update(elapsed);
   sheetUniforms.uTime.value = elapsed;
   updateFades(delta);
+
+  // Bloom flash: spike strength for _bloomFlash seconds, then decay
+  if (_bloomFlash > 0) {
+    bloomPass.strength = WAYPOINTS_BLOOM[cameraSystem.currentStage] + _bloomFlash * 6;
+    _bloomFlash = Math.max(0, _bloomFlash - delta * 3);
+    if (_bloomFlash <= 0) bloomPass.strength = WAYPOINTS_BLOOM[cameraSystem.currentStage];
+  }
 
   composer.render();
 }

@@ -693,4 +693,125 @@ Add to `main.js` during development to enable programmatic stage control:
 window.cameraSystem = cameraSystem;   // allows page.evaluate(() => window.cameraSystem.goToStage(3))
 window.scene = scene;                  // inspect scene graph from Playwright
 window.renderer = renderer;            // check renderer.info.render.calls etc.
+
+---
+
+## CanvasTexture for crisp in-world text
+
+When you need readable text on a 3D plane (e.g. labels, periodic-table cards), fonts
+aren't available without FontLoader. Use `CanvasTexture` instead — it works in
+Chromium/SwiftShader and renders pixel-crisp text at any resolution.
+
+```js
+function makeTextPlane(text, planeW, planeH, canvasW, fontSize, bold = false, color = '#ffffff') {
+  const canvasH = Math.round(canvasW * (planeH / planeW));
+  const canvas  = document.createElement('canvas');
+  canvas.width  = canvasW;
+  canvas.height = canvasH;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvasW, canvasH);         // transparent background
+  ctx.fillStyle    = color;
+  ctx.font         = `${bold ? 'bold ' : ''}${fontSize}px 'Courier New', monospace`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, canvasW / 2, canvasH / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide });
+  return new THREE.Mesh(new THREE.PlaneGeometry(planeW, planeH), mat);
+}
+```
+
+**Key points:**
+- `ctx.clearRect` before drawing leaves the canvas alpha-transparent — set `transparent: true` on the material.
+- `MeshBasicMaterial` ignores lighting, so text is always full-brightness (no need for emissive).
+- The bloom pass **will** bloom bright `MeshBasicMaterial` pixels — white/cyan text gets a natural glow halo.
+- Scale `canvasW` up (512–1024) for text that will be close to the camera; lower (256) for small labels.
+- Use `side: THREE.DoubleSide` if the card can be seen from behind.
+
+---
+
+## UnrealBloomPass — controlling glow tightness
+
+`UnrealBloomPass(resolution, strength, radius, threshold)`:
+- **strength**: how bright the bloom glow is.
+- **radius** (0–1): how far the glow spreads from source pixels. `0.1–0.15` = tight halo (sharp edges); `0.4+` = wide blurry glow.
+- **threshold**: minimum luminance before a pixel contributes to bloom.
+
+You can update all three per-frame or per-stage:
+```js
+bloomPass.strength  = 1.8;
+bloomPass.radius    = 0.12;   // tight → atomic structures stay crisp
+bloomPass.threshold = 0.82;
+```
+
+**Per-stage radius array pattern** (from pencil-to-atom project):
+```js
+const BLOOM_RADIUS = [0.28, 0.22, 0.14, 0.12, 0.10, 0.20];
+// In onStageChange:  bloomPass.radius = BLOOM_RADIUS[toStage];
+```
+
+**Bloom flash** — temporarily spike strength for a dramatic transition flash:
+```js
+let bloomFlash = 0;
+// trigger: bloomFlash = 0.5;
+// in animate():
+if (bloomFlash > 0) {
+  bloomPass.strength = BASE_STRENGTH + bloomFlash * 6;
+  bloomFlash = Math.max(0, bloomFlash - delta * 3);
+}
+```
+
+---
+
+## Splitting a mesh group for independent animation (e.g. pencil snap)
+
+When you need two halves of an object to animate independently:
+1. Build each half as its own `THREE.Group` (topGroup / bottomGroup).
+2. Add both groups to a parent group — the parent acts as the "whole object" for visibility/fade.
+3. Animate each sub-group's `position` and `rotation` independently inside an `update(elapsed)` closure.
+
+```js
+const topGroup    = new THREE.Group();
+const bottomGroup = new THREE.Group();
+pencilGroup.add(topGroup);
+pencilGroup.add(bottomGroup);
+
+function startBreak(onComplete) { _breaking = true; ... }
+
+function update(elapsed) {
+  if (!_breaking) return;
+  const t = Math.min(1, (elapsed - _breakStart) / DURATION);
+  // phase 1: shake
+  // phase 2: fly apart
+  topGroup.position.y = eased * 5.5;
+  bottomGroup.position.y = -eased * 4.5;
+  if (t >= 1) onComplete();
+}
+```
+
+**Sharing geometry between two Mesh objects is fine** — a `BufferGeometry` can be referenced by multiple `Mesh` instances even in different groups. Only `Mesh` objects have a single parent.
+
+---
+
+## ConeGeometry orientation trick
+
+`ConeGeometry(radius, height, segments)` — apex is at local `+Y`, base at local `−Y`.
+To point the apex **downward** (e.g. pencil tip): `mesh.rotation.x = Math.PI`.
+
+After the rotation:
+- Base (wide end, radius) → world `+Y` offset from mesh centre
+- Apex (tip) → world `−Y` offset from mesh centre
+
+Position formula to connect base to an existing surface at world `yTarget`:
+```
+mesh.position.y = yTarget - height / 2
+```
+
+---
+
+## Emissive vs LineBasicMaterial brightness
+
+`LineBasicMaterial` does **not** have `emissive` — the `color` IS the full output colour regardless of lights. To make lines bright on a dark background:
+- Use a bright hex like `#44aaff` or `new THREE.Color(0.3, 0.7, 1.0)` (linear values > sRGB).
+- Add a dedicated `PointLight` inside the group so `MeshStandardMaterial` atoms are also lit.
 ```

@@ -1,4 +1,11 @@
+// Stage 0 & 1 — Pencil macro / graphite tip zoom
+// The pencil is split into a topGroup and bottomGroup at the break seam (y = 0).
+// startBreak(onComplete) shakes the pencil then snaps the two halves apart,
+// dramatically revealing the graphite core before the graphene layers appear.
+
 import * as THREE from 'three';
+
+const BREAK_DURATION = 1.5;  // seconds for the full snap animation
 
 export function buildPencil(scene) {
   const pencilGroup = new THREE.Group();
@@ -8,13 +15,11 @@ export function buildPencil(scene) {
     color: '#f0c038', roughness: 0.55, metalness: 0.0, flatShading: true,
   });
   const woodMat = new THREE.MeshStandardMaterial({
-    color: '#f0ece0',    // white/cream exposed wood
-    roughness: 0.82, metalness: 0.0, flatShading: true,
+    color: '#f0ece0', roughness: 0.82, metalness: 0.0, flatShading: true,
   });
-  // Graphite is dark grey but polished — high metalness catches specular highlights
-  // so it reads against the dark background even without emissive.
+  // Grey graphite — mid-value so it reads against the dark background
   const graphiteMat = new THREE.MeshStandardMaterial({
-    color: '#22222e', roughness: 0.18, metalness: 0.65,
+    color: '#6a6a7e', roughness: 0.20, metalness: 0.65,
   });
   const ferruleMat = new THREE.MeshStandardMaterial({
     color: '#c8d4dc', roughness: 0.10, metalness: 0.97,
@@ -22,69 +27,107 @@ export function buildPencil(scene) {
   const eraserMat = new THREE.MeshStandardMaterial({
     color: '#f07878', roughness: 0.90, metalness: 0.0,
   });
+  // Interior cross-section exposed at the break point
+  const csMat = new THREE.MeshStandardMaterial({
+    color: '#d4a030', roughness: 0.60, metalness: 0.0, flatShading: true,
+  });
+  const csGraphiteMat = new THREE.MeshStandardMaterial({
+    color: '#44445a', roughness: 0.25, metalness: 0.55,
+  });
 
-  // ── Hexagonal body ────────────────────────────────────────────────────────
-  // Body extends from y = -4 (bottom) to y = +4 (top). Length = 8.
-  const bodyGeo  = new THREE.CylinderGeometry(0.5, 0.5, 8.0, 6);
-  const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-  pencilGroup.add(bodyMesh);  // centred at y=0
+  // ── Shared cross-section geometry (one hex face, reused for both halves) ──
+  const csFaceGeo   = new THREE.CircleGeometry(0.5, 6);
+  const csCoreGeo   = new THREE.CircleGeometry(0.072, 10);
 
-  // ── Sharpened wood cone (white) ───────────────────────────────────────────
-  // ConeGeometry default: apex at local +y = +h/2, base at local -y = -h/2.
-  // After rotation.x = PI: apex → world -y, base → world +y relative to centre.
-  //   base world y = meshY + 0.75, apex world y = meshY - 0.75
-  // We want base flush with body bottom (y = -4):
-  //   meshY = -4 - 0.75 = -4.75   →   apex at -5.50
-  const woodConeGeo  = new THREE.ConeGeometry(0.5, 1.5, 6);
-  const woodConeMesh = new THREE.Mesh(woodConeGeo, woodMat);
-  woodConeMesh.rotation.x = Math.PI;
-  woodConeMesh.position.y = -4.75;
-  pencilGroup.add(woodConeMesh);
+  // ╔══════════════════════════════════════════════════════╗
+  // ║  TOP GROUP  — eraser end (y = 0 … +5)               ║
+  // ╚══════════════════════════════════════════════════════╝
+  const topGroup = new THREE.Group();
 
-  // ── Graphite rod visible through the taper ────────────────────────────────
-  // Thin cylinder centred at the same y as the wood cone.
-  // Extends y = -4.75 ± 0.65  →  -4.10 to -5.40
-  const rodGeo  = new THREE.CylinderGeometry(0.072, 0.072, 1.3, 10);
-  const rodMesh = new THREE.Mesh(rodGeo, graphiteMat);
-  rodMesh.position.y = -4.75;
-  pencilGroup.add(rodMesh);
+  // Upper body half: y = 0 → +4
+  const upperBodyGeo = new THREE.CylinderGeometry(0.5, 0.5, 4.0, 6);
+  const upperBodyMesh = new THREE.Mesh(upperBodyGeo, bodyMat);
+  upperBodyMesh.position.y = 2.0;
+  topGroup.add(upperBodyMesh);
 
-  // ── Graphite tip (very sharp black cone) ──────────────────────────────────
-  // h=0.28:  base at meshY + 0.14,  apex at meshY - 0.14
-  // base connects to rod bottom (-5.40): meshY = -5.40 - 0.14 = -5.54
-  // apex at -5.68
-  const tipGeo  = new THREE.ConeGeometry(0.072, 0.28, 10);
-  const tipMesh = new THREE.Mesh(tipGeo, graphiteMat);
-  tipMesh.rotation.x = Math.PI;
-  tipMesh.position.y = -5.54;
-  pencilGroup.add(tipMesh);
+  // Cross-section face at the snap point — faces downward (−Y)
+  const csFaceTop = new THREE.Mesh(csFaceGeo, csMat);
+  csFaceTop.rotation.x  = Math.PI / 2;
+  csFaceTop.position.y  = 0.01;
+  topGroup.add(csFaceTop);
 
-  // ── Ferrule — silver metallic ring ────────────────────────────────────────
+  const csCoreTop = new THREE.Mesh(csCoreGeo, csGraphiteMat);
+  csCoreTop.rotation.x  = Math.PI / 2;
+  csCoreTop.position.y  = 0.015;
+  topGroup.add(csCoreTop);
+
+  // Ferrule
   const ferruleGeo  = new THREE.CylinderGeometry(0.548, 0.548, 0.42, 24);
   const ferruleMesh = new THREE.Mesh(ferruleGeo, ferruleMat);
   ferruleMesh.position.y = 4.21;
-  pencilGroup.add(ferruleMesh);
-
-  // Two slim accent grooves on the ferrule
+  topGroup.add(ferruleMesh);
   const grooveGeo = new THREE.CylinderGeometry(0.562, 0.562, 0.055, 24);
   [-0.22, 0.22].forEach(dy => {
-    const groove = new THREE.Mesh(grooveGeo, ferruleMat);
-    groove.position.y = 4.21 + dy;
-    pencilGroup.add(groove);
+    const g = new THREE.Mesh(grooveGeo, ferruleMat);
+    g.position.y = 4.21 + dy;
+    topGroup.add(g);
   });
 
-  // ── Eraser ────────────────────────────────────────────────────────────────
+  // Eraser
   const eraserGeo  = new THREE.CylinderGeometry(0.5, 0.5, 0.58, 24);
   const eraserMesh = new THREE.Mesh(eraserGeo, eraserMat);
   eraserMesh.position.y = 4.71;
-  pencilGroup.add(eraserMesh);
-
-  // Eraser top cap
+  topGroup.add(eraserMesh);
   const capGeo  = new THREE.CircleGeometry(0.5, 24);
   const capMesh = new THREE.Mesh(capGeo, eraserMat);
   capMesh.rotation.x = -Math.PI / 2;
   capMesh.position.y  = 5.00;
-  pencilGroup.add(capMesh);
+  topGroup.add(capMesh);
+
+  // ╔══════════════════════════════════════════════════════╗
+  // ║  BOTTOM GROUP  — tip end (y = −4 … 0)               ║
+  // ╚══════════════════════════════════════════════════════╝
+  const bottomGroup = new THREE.Group();
+
+  // Lower body half: y = −4 → 0
+  const lowerBodyGeo = new THREE.CylinderGeometry(0.5, 0.5, 4.0, 6);
+  const lowerBodyMesh = new THREE.Mesh(lowerBodyGeo, bodyMat);
+  lowerBodyMesh.position.y = -2.0;
+  bottomGroup.add(lowerBodyMesh);
+
+  // Cross-section face — faces upward (+Y)
+  const csFaceBot = new THREE.Mesh(csFaceGeo, csMat);
+  csFaceBot.rotation.x  = -Math.PI / 2;
+  csFaceBot.position.y  = -0.01;
+  bottomGroup.add(csFaceBot);
+
+  const csCoreBot = new THREE.Mesh(csCoreGeo, csGraphiteMat);
+  csCoreBot.rotation.x  = -Math.PI / 2;
+  csCoreBot.position.y  = -0.015;
+  bottomGroup.add(csCoreBot);
+
+  // Sharpened wood cone:  base at y=−4, apex at y=−5.5
+  const woodConeGeo  = new THREE.ConeGeometry(0.5, 1.5, 6);
+  const woodConeMesh = new THREE.Mesh(woodConeGeo, woodMat);
+  woodConeMesh.rotation.x = Math.PI;
+  woodConeMesh.position.y = -4.75;
+  bottomGroup.add(woodConeMesh);
+
+  // Graphite rod
+  const rodGeo  = new THREE.CylinderGeometry(0.072, 0.072, 1.3, 10);
+  const rodMesh = new THREE.Mesh(rodGeo, graphiteMat);
+  rodMesh.position.y = -4.75;
+  bottomGroup.add(rodMesh);
+
+  // Graphite tip cone
+  const tipGeo  = new THREE.ConeGeometry(0.072, 0.28, 10);
+  const tipMesh = new THREE.Mesh(tipGeo, graphiteMat);
+  tipMesh.rotation.x = Math.PI;
+  tipMesh.position.y = -5.54;
+  bottomGroup.add(tipMesh);
+
+  pencilGroup.add(topGroup);
+  pencilGroup.add(bottomGroup);
 
   // ── Shadows ───────────────────────────────────────────────────────────────
   pencilGroup.traverse(c => {
@@ -102,15 +145,74 @@ export function buildPencil(scene) {
   fill.position.set(-5, 2, 5);
   scene.add(fill);
 
-  // Rim light from below-front aimed at the tip so the polished graphite
-  // catches a specular highlight and reads against the dark background.
-  const rimLight = new THREE.DirectionalLight(0xaaccff, 2.2);
-  rimLight.position.set(1, -10, 4);
-  scene.add(rimLight);
-
   const ambient = new THREE.AmbientLight(0x334466, 1.8);
   scene.add(ambient);
 
+  // Rim light from below-front so the polished grey graphite tip
+  // catches a specular highlight against the dark background.
+  const rimLight = new THREE.DirectionalLight(0xaaccff, 2.5);
+  rimLight.position.set(1, -10, 4);
+  scene.add(rimLight);
+
   scene.add(pencilGroup);
-  return { group: pencilGroup };
+
+  // ── Break animation state ─────────────────────────────────────────────────
+  let _breaking        = false;
+  let _breakStartTime  = null;
+  let _onBreakComplete = null;
+
+  function startBreak(onComplete) {
+    _breakStartTime  = null;   // set lazily on first update tick
+    _breaking        = true;
+    _onBreakComplete = onComplete;
+  }
+
+  function resetBreak() {
+    _breaking = false;
+    topGroup.position.set(0, 0, 0);
+    topGroup.rotation.set(0, 0, 0);
+    bottomGroup.position.set(0, 0, 0);
+    bottomGroup.rotation.set(0, 0, 0);
+  }
+
+  function update(elapsed) {
+    if (!_breaking) return;
+    if (_breakStartTime === null) _breakStartTime = elapsed;
+
+    const t = Math.min(1, (elapsed - _breakStartTime) / BREAK_DURATION);
+
+    // ── Phase 1 (0 – 0.20): rapid tremor ───────────────────────────────────
+    if (t < 0.20) {
+      const st = t / 0.20;
+      const shake = Math.sin(st * Math.PI * 14) * 0.055 * (1 - st);
+      topGroup.position.x    =  shake;
+      bottomGroup.position.x = -shake;
+    }
+
+    // ── Phase 2 (0.20 – 1.0): snap apart ───────────────────────────────────
+    if (t >= 0.20) {
+      const ft    = (t - 0.20) / 0.80;
+      const eased = ft * ft;               // ease-in: accelerates as halves fly apart
+
+      // Top half: flies up, tilts back
+      topGroup.position.y = eased * 5.5;
+      topGroup.position.z = eased * 1.5;   // recedes slightly — "away from camera"
+      topGroup.rotation.z = eased * 0.45;
+
+      // Bottom half: falls and rotates — reveals the graphite core to the camera
+      bottomGroup.position.y = -eased * 4.5;
+      bottomGroup.position.z =  eased * 1.2;
+      bottomGroup.rotation.z = -eased * 0.35;
+    }
+
+    if (t >= 1) {
+      _breaking = false;
+      if (_onBreakComplete) {
+        _onBreakComplete();
+        _onBreakComplete = null;
+      }
+    }
+  }
+
+  return { group: pencilGroup, topGroup, bottomGroup, update, startBreak, resetBreak };
 }
